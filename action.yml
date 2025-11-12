@@ -9,6 +9,11 @@ inputs:
         required: true
         default: ""
         type: string
+    out_input_file:
+        description: 'console out edited input file content'
+        required: false
+        default: false
+        type: boolean
     add_param_section:
         description: 'question text'
         required: false
@@ -46,7 +51,12 @@ runs:
           $key     = "${{ inputs.add_param_key }}"
           $value   = "${{ inputs.add_param_value }}"
 
-          if (-not (Test-Path $iniPath)) { '' | Set-Content -Path $iniPath -Encoding UTF8 }
+          if (-not (Test-Path $iniPath)) {
+              '' | Set-Content -Path $iniPath -Encoding UTF8
+              Write-Host "Created new file: $iniPath"
+          } else {
+              Write-Host "File exists: $iniPath"
+          }
 
           # ---- helpers ----
           function Is-SectionHeader([string]$line, [ref]$name){
@@ -113,3 +123,14 @@ runs:
           }
 
           [System.IO.File]::WriteAllLines($iniPath, $lines, (New-Object System.Text.UTF8Encoding($false)))
+
+      - name: Output ini
+        if: ${{ inputs.out_input_file == 'true' }}
+        shell: pwsh
+        run: |
+          $path = "${{ inputs.ini_path }}"
+          if (-not (Test-Path -LiteralPath $path)) {
+            Write-Error "File not found: ${path}"
+          }
+          Write-Host "File outputs: ${path}"
+          Get-Content -LiteralPath $path -Raw | Write-Output
