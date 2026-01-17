@@ -45,92 +45,92 @@ runs:
       - name: Edit INI
         shell: pwsh
         run: |
-          # Inputs
-          $iniPath = "${{ inputs.ini_path }}"
-          $section = "${{ inputs.add_param_section }}"
-          $key     = "${{ inputs.add_param_key }}"
-          $value   = "${{ inputs.add_param_value }}"
-
-          if (-not (Test-Path $iniPath)) {
-              '' | Set-Content -Path $iniPath -Encoding UTF8
-              Write-Host "Created new file: $iniPath"
-          } else {
-              Write-Host "File exists: $iniPath"
-          }
-
-          # ---- helpers ----
-          function Is-SectionHeader([string]$line, [ref]$name){
-            $t = $line.Trim()
-            if($t.StartsWith('[') -and $t.EndsWith(']') -and $t.Length -ge 2){ $name.Value = $t.Substring(1,$t.Length-2); return $true }
-            $name.Value = ''; return $false
-          }
-          function Is-KeyLine([string]$line, [ref]$keyName){
-            $t = $line.TrimStart()
-            if([string]::IsNullOrWhiteSpace($t) -or $t[0] -in '#',';','['){ $keyName.Value=''; return $false }
-            $eq = $t.IndexOf('='); if($eq -lt 1){ $keyName.Value=''; return $false }
-            $keyName.Value = $t.Substring(0,$eq).Trim(); return ($keyName.Value.Length -gt 0)
-          }
-
-          # ---- load
-          $lines = [System.Collections.Generic.List[string]]::new()
-          $lines.AddRange([System.IO.File]::ReadAllLines($iniPath))
-
-          # sections = [{Name,Start,End})
-          $sections = New-Object System.Collections.Generic.List[psobject]
-          for($i=0; $i -lt $lines.Count; $i++){
-            $sec=''; if(Is-SectionHeader $lines[$i] ([ref]$sec)){
-              $end = $lines.Count
-              for($j=$i+1; $j -lt $lines.Count; $j++){
-                $tmp=''; if(Is-SectionHeader $lines[$j] ([ref]$tmp)){ $end = $j; break }
-              }
-              $sections.Add([pscustomobject]@{ Name=$sec; Start=$i; End=$end })
+            # Inputs
+            $iniPath = "${{ inputs.ini_path }}"
+            $section = "${{ inputs.add_param_section }}"
+            $key     = "${{ inputs.add_param_key }}"
+            $value   = "${{ inputs.add_param_value }}"
+            
+            if (-not (Test-Path $iniPath)) {
+                '' | Set-Content -Path $iniPath -Encoding UTF8
+                Write-Host "Created new file: $iniPath"
+            } else {
+                Write-Host "File exists: $iniPath"
             }
-          }
-
-          # All occurrences of the same section name (UE may split sections)
-          $targets = @($sections | Where-Object { $_.Name -ieq $section })
-
-          if($targets.Count -eq 0){
-            # No section -> append new [Section] and Key=Value (insert a separator blank only if the file doesn't already end with blank)
-            if($lines.Count -gt 0 -and $lines[$lines.Count-1].Length -gt 0){ $lines.Add('') }
-            $lines.Add("[$section]")
-            $lines.Add("$key=$value")
-          } else {
-            # Replace-in-place for every existing key line in ALL target sections (keep duplicates, just update values)
-            $replaced = $false
-            foreach($t in $targets){
-              for($k=$t.Start+1; $k -lt $t.End; $k++){
-                $kn=''; if(Is-KeyLine $lines[$k] ([ref]$kn)){
-                  if($kn -ieq $key){
-                    $lines[$k] = "$key=$value"
-                    $replaced = $true
-                  }
+            
+            # ---- helpers ----
+            function Is-SectionHeader([string]$line, [ref]$name){
+                $t = $line.Trim()
+                if($t.StartsWith('[') -and $t.EndsWith(']') -and $t.Length -ge 2){ $name.Value =    $t.Substring(1,$t.Length-2); return $true } 
+                $name.Value = ''; return $false 
+            }
+            function Is-KeyLine([string]$line, [ref]$keyName){
+                $t = $line.TrimStart()
+                if([string]::IsNullOrWhiteSpace($t) -or $t[0] -in '#',';','['){ $keyName.Value=''; return   $false }
+                $eq = $t.IndexOf('='); if($eq -lt 1){ $keyName.Value=''; return $false }
+                $keyName.Value = $t.Substring(0,$eq).Trim(); return ($keyName.Value.Length -gt 0)
+            }
+            
+            # ---- load
+            $lines = [System.Collections.Generic.List[string]]::new()
+            $lines.AddRange([System.IO.File]::ReadAllLines($iniPath))
+            
+            # sections = [{Name,Start,End})
+            $sections = New-Object System.Collections.Generic.List[psobject]
+            for($i=0; $i -lt $lines.Count; $i++){
+                $sec=''; if(Is-SectionHeader $lines[$i] ([ref]$sec)){
+                $end = $lines.Count
+                for($j=$i+1; $j -lt $lines.Count; $j++){
+                    $tmp=''; if(Is-SectionHeader $lines[$j] ([ref]$tmp)){ $end = $j; break }
                 }
-              }
+                $sections.Add([pscustomobject]@{ Name=$sec; Start=$i; End=$end })
+                }
             }
-
-            if(-not $replaced){
-              # No existing key in any occurrence -> add one at the END of the LAST occurrence
-              $last = $targets[-1]
-              $insertAt = $last.End
-              # Avoid creating an extra blank line: if last line in section is blank, replace it
-              if(($insertAt-1) -ge ($last.Start+1) -and $lines[$insertAt-1].Trim().Length -eq 0){
-                $lines[$insertAt-1] = "$key=$value"
-              } else {
-                $lines.Insert($insertAt, "$key=$value")
-              }
+            
+            # All occurrences of the same section name (UE may split sections)
+            $targets = @($sections | Where-Object { $_.Name -ieq $section })
+            
+            if($targets.Count -eq 0){
+                # No section -> append new [Section] and Key=Value (insert a separator blank only if the file   doesn't already end with blank) 
+                if($lines.Count -gt 0 -and $lin es[$lines.Count-1].Length -gt 0){ $lines.Add('') }
+                $lines.Add("[$sectio    n]")
+                $lines.Add("    $key=$value")
+            } else {
+                # Replace-in-place for every existing key line in ALL target sections (keep duplicates, just    update values)  
+                $replaced = $fal    se
+                foreach(    $t in $targets){
+                    for($k=$t.Start+1; $k -lt $t.End; $k++){
+                        $kn=''; if(Is-KeyLine $lines[$k] ([ref]$kn)){
+                            if($kn -ieq $key){
+                                $lines[$k] = "$key=$value"
+                                $replaced = $true
+                            }
+                        }
+                    }
+                }
+            
+                if(-not $replaced){
+                    # No existing key in any occurrence -> add one at the END of the LAST occurrence
+                    $last = $targets[-1]
+                    $insertAt = $last.End
+                    # Avoid creating an extra blank line: if last line in section is blank, replace it
+                    if(($insertAt-1) -ge ($last.Start+1) -and $lines[$insertAt-1].Trim().Length -eq 0){
+                        $lines[$insertAt-1] = "$key=$value"
+                    } else {
+                        $lines.Insert($insertAt, "$key=$value")
+                    }
+                }
             }
-          }
-
-          [System.IO.File]::WriteAllLines($iniPath, $lines, (New-Object System.Text.UTF8Encoding($false)))
-
-      - name: Output ini
-        if: ${{ inputs.out_input_file == 'true' }}
-        shell: pwsh
-        run: |
-          $path = "${{ inputs.ini_path }}"
-          if (-not (Test-Path -LiteralPath $path)) {
-            Write-Error "File not found: ${path}"
-          }
-          Write-Host "File outputs: ${path}"
-          Get-Content -LiteralPath $path -Raw | Write-Output
+            
+            [System.IO.File]::WriteAllLines($iniPath, $lines, (New-Object System.Text.UTF8Encoding($false)))
+            
+        - name: Output ini
+          if: ${{ inputs.out_input_file == 'true' }}
+          shell: pwsh
+          run: |
+            $path = "${{ inputs.ini_path }}"
+            if (-not (Test-Path -LiteralPath $path)) {
+                Write-Error "File not found: ${path}"
+            }
+            Write-Host "File outputs: ${path}"
+            Get-Content -LiteralPath $path -Raw | Write-Output
