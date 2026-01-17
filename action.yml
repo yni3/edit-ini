@@ -208,10 +208,10 @@ runs:
             # ---- save with SAME encoding (and same BOM behavior via Encoding instance)
             Write-AllLinesWithEncoding -path $iniPath -lines $lines -enc $encInfo.Encoding
             
-        - name: Output ini
-          if: ${{ inputs.out_input_file == 'true' }}
-          shell: pwsh
-          run: |
+      - name: Output ini
+        if: ${{ inputs.out_input_file == 'true' }}
+        shell: pwsh
+        run: |
             $path = "${{ inputs.ini_path }}"
             if (-not (Test-Path -LiteralPath $path)) {
               Write-Error "File not found: ${path}"
