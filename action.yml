@@ -50,79 +50,163 @@ runs:
             $section = "${{ inputs.add_param_section }}"
             $key     = "${{ inputs.add_param_key }}"
             $value   = "${{ inputs.add_param_value }}"
-            
-            if (-not (Test-Path $iniPath)) {
-                '' | Set-Content -Path $iniPath -Encoding UTF8
-                Write-Host "Created new file: $iniPath"
-            } else {
-                Write-Host "File exists: $iniPath"
-            }
-            
+
             # ---- helpers ----
+            function Get-IniEncodingInfo([string]$path) {
+              # Return: @{ Kind = 'utf8'|'utf16le'|'utf16be'|'utf32le'|'utf32be'|'cp932'; Encoding = <Encoding>; HasBom = <bool> }
+              if (-not (Test-Path -LiteralPath $path)) {
+                return @{
+                  Kind     = 'utf8'
+                  Encoding = [System.Text.UTF8Encoding]::new($false)  # UTF-8 without BOM
+                  HasBom   = $false
+                }
+              }
+
+              $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+              try {
+                $buf = New-Object byte[] 4
+                $read = $fs.Read($buf, 0, 4)
+
+                # BOM detection (order matters)
+                if ($read -ge 4 -and $buf[0] -eq 0x00 -and $buf[1] -eq 0x00 -and $buf[2] -eq 0xFE -and $buf[3] -eq 0xFF) {
+                  return @{ Kind='utf32be'; Encoding=[System.Text.UTF32Encoding]::new($true,  $true); HasBom=$true }
+                }
+                if ($read -ge 4 -and $buf[0] -eq 0xFF -and $buf[1] -eq 0xFE -and $buf[2] -eq 0x00 -and $buf[3] -eq 0x00) {
+                  return @{ Kind='utf32le'; Encoding=[System.Text.UTF32Encoding]::new($false, $true); HasBom=$true }
+                }
+                if ($read -ge 3 -and $buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF) {
+                  return @{ Kind='utf8';    Encoding=[System.Text.UTF8Encoding]::new($true); HasBom=$true }
+                }
+                if ($read -ge 2 -and $buf[0] -eq 0xFE -and $buf[1] -eq 0xFF) {
+                  return @{ Kind='utf16be'; Encoding=[System.Text.UnicodeEncoding]::new($true,  $true); HasBom=$true }
+                }
+                if ($read -ge 2 -and $buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) {
+                  return @{ Kind='utf16le'; Encoding=[System.Text.UnicodeEncoding]::new($false, $true); HasBom=$true }
+                }
+
+                # No BOM: try UTF-8 strict, fallback to CP932
+                $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true) # no BOM, throw on invalid bytes
+                $fs.Position = 0
+                try {
+                  $sr = [System.IO.StreamReader]::new($fs, $strictUtf8, $false, 4096, $true)
+                  try {
+                    while (-not $sr.EndOfStream) { [void]$sr.ReadLine() }
+                  } finally {
+                    $sr.Dispose()
+                  }
+                  return @{ Kind='utf8'; Encoding=[System.Text.UTF8Encoding]::new($false); HasBom=$false }
+                } catch {
+                  # CP932 (Shift-JIS) fallback (Windows Japanese typical)
+                  return @{ Kind='cp932'; Encoding=[System.Text.Encoding]::GetEncoding(932); HasBom=$false }
+                }
+              } finally {
+                $fs.Dispose()
+              }
+            }
+
+            function Read-AllLinesWithEncoding([string]$path, [System.Text.Encoding]$enc) {
+              $lines = [System.Collections.Generic.List[string]]::new()
+              if (-not (Test-Path -LiteralPath $path)) { return $lines }
+
+              $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+              try {
+                $sr = [System.IO.StreamReader]::new($fs, $enc, $false) # detect BOM = false (we already decided)
+                try {
+                  while (-not $sr.EndOfStream) { $lines.Add($sr.ReadLine()) }
+                } finally {
+                  $sr.Dispose()
+                }
+              } finally {
+                $fs.Dispose()
+              }
+              return $lines
+            }
+
+            function Write-AllLinesWithEncoding([string]$path, [System.Collections.Generic.List[string]]$lines, [System.Text.Encoding]$enc) {
+              $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+              try {
+                $sw = [System.IO.StreamWriter]::new($fs, $enc)
+                try {
+                  for ($i=0; $i -lt $lines.Count; $i++) {
+                    $sw.WriteLine($lines[$i])
+                  }
+                } finally {
+                  $sw.Dispose()
+                }
+              } finally {
+                $fs.Dispose()
+              }
+            }
+
             function Is-SectionHeader([string]$line, [ref]$name){
-                $t = $line.Trim()
-                if($t.StartsWith('[') -and $t.EndsWith(']') -and $t.Length -ge 2){ $name.Value =    $t.Substring(1,$t.Length-2); return $true } 
-                $name.Value = ''; return $false 
+              $t = $line.Trim()
+              if($t.StartsWith('[') -and $t.EndsWith(']') -and $t.Length -ge 2){ $name.Value = $t.Substring(1,$t.Length-2); return $true }
+              $name.Value = ''; return $false
             }
             function Is-KeyLine([string]$line, [ref]$keyName){
-                $t = $line.TrimStart()
-                if([string]::IsNullOrWhiteSpace($t) -or $t[0] -in '#',';','['){ $keyName.Value=''; return   $false }
-                $eq = $t.IndexOf('='); if($eq -lt 1){ $keyName.Value=''; return $false }
-                $keyName.Value = $t.Substring(0,$eq).Trim(); return ($keyName.Value.Length -gt 0)
+              $t = $line.TrimStart()
+              if([string]::IsNullOrWhiteSpace($t) -or $t[0] -in '#',';','['){ $keyName.Value=''; return $false }
+              $eq = $t.IndexOf('='); if($eq -lt 1){ $keyName.Value=''; return $false }
+              $keyName.Value = $t.Substring(0,$eq).Trim(); return ($keyName.Value.Length -gt 0)
             }
-            
-            # ---- load
-            $lines = [System.Collections.Generic.List[string]]::new()
-            $lines.AddRange([System.IO.File]::ReadAllLines($iniPath))
-            
+
+            # ---- determine encoding (existing: preserve, new: UTF-8 no BOM)
+            $encInfo = Get-IniEncodingInfo -path $iniPath
+
+            if (-not (Test-Path -LiteralPath $iniPath)) {
+              Write-Host "Creating new file (UTF-8 no BOM): $iniPath"
+            } else {
+              Write-Host "File exists: $iniPath (detected: $($encInfo.Kind), BOM: $($encInfo.HasBom))"
+            }
+
+            # ---- load with detected encoding
+            $lines = Read-AllLinesWithEncoding -path $iniPath -enc $encInfo.Encoding
+
             # sections = [{Name,Start,End})
             $sections = New-Object System.Collections.Generic.List[psobject]
             for($i=0; $i -lt $lines.Count; $i++){
-                $sec=''; if(Is-SectionHeader $lines[$i] ([ref]$sec)){
+              $sec=''; if(Is-SectionHeader $lines[$i] ([ref]$sec)){
                 $end = $lines.Count
                 for($j=$i+1; $j -lt $lines.Count; $j++){
-                    $tmp=''; if(Is-SectionHeader $lines[$j] ([ref]$tmp)){ $end = $j; break }
+                  $tmp=''; if(Is-SectionHeader $lines[$j] ([ref]$tmp)){ $end = $j; break }
                 }
                 $sections.Add([pscustomobject]@{ Name=$sec; Start=$i; End=$end })
-                }
+              }
             }
-            
+
             # All occurrences of the same section name (UE may split sections)
             $targets = @($sections | Where-Object { $_.Name -ieq $section })
-            
+
             if($targets.Count -eq 0){
-                # No section -> append new [Section] and Key=Value (insert a separator blank only if the file   doesn't already end with blank) 
-                if($lines.Count -gt 0 -and $lin es[$lines.Count-1].Length -gt 0){ $lines.Add('') }
-                $lines.Add("[$sectio    n]")
-                $lines.Add("    $key=$value")
+              if($lines.Count -gt 0 -and $lines[$lines.Count-1].Length -gt 0){ $lines.Add('') }
+              $lines.Add("[$section]")
+              $lines.Add("$key=$value")
             } else {
-                # Replace-in-place for every existing key line in ALL target sections (keep duplicates, just    update values)  
-                $replaced = $fal    se
-                foreach(    $t in $targets){
-                    for($k=$t.Start+1; $k -lt $t.End; $k++){
-                        $kn=''; if(Is-KeyLine $lines[$k] ([ref]$kn)){
-                            if($kn -ieq $key){
-                                $lines[$k] = "$key=$value"
-                                $replaced = $true
-                            }
-                        }
+              $replaced = $false
+              foreach($t in $targets){
+                for($k=$t.Start+1; $k -lt $t.End; $k++){
+                  $kn=''; if(Is-KeyLine $lines[$k] ([ref]$kn)){
+                    if($kn -ieq $key){
+                      $lines[$k] = "$key=$value"
+                      $replaced = $true
                     }
+                  }
                 }
-            
-                if(-not $replaced){
-                    # No existing key in any occurrence -> add one at the END of the LAST occurrence
-                    $last = $targets[-1]
-                    $insertAt = $last.End
-                    # Avoid creating an extra blank line: if last line in section is blank, replace it
-                    if(($insertAt-1) -ge ($last.Start+1) -and $lines[$insertAt-1].Trim().Length -eq 0){
-                        $lines[$insertAt-1] = "$key=$value"
-                    } else {
-                        $lines.Insert($insertAt, "$key=$value")
-                    }
+              }
+
+              if(-not $replaced){
+                $last = $targets[-1]
+                $insertAt = $last.End
+                if(($insertAt-1) -ge ($last.Start+1) -and $lines[$insertAt-1].Trim().Length -eq 0){
+                  $lines[$insertAt-1] = "$key=$value"
+                } else {
+                  $lines.Insert($insertAt, "$key=$value")
                 }
+              }
             }
-            
-            [System.IO.File]::WriteAllLines($iniPath, $lines, (New-Object System.Text.UTF8Encoding($false)))
+
+            # ---- save with SAME encoding (and same BOM behavior via Encoding instance)
+            Write-AllLinesWithEncoding -path $iniPath -lines $lines -enc $encInfo.Encoding
             
         - name: Output ini
           if: ${{ inputs.out_input_file == 'true' }}
@@ -130,7 +214,13 @@ runs:
           run: |
             $path = "${{ inputs.ini_path }}"
             if (-not (Test-Path -LiteralPath $path)) {
-                Write-Error "File not found: ${path}"
+              Write-Error "File not found: ${path}"
             }
-            Write-Host "File outputs: ${path}"
-            Get-Content -LiteralPath $path -Raw | Write-Output
+
+            # reuse same encoding detection helper (Get-IniEncodingInfo) and reader
+            $encInfo = Get-IniEncodingInfo -path $path
+            $lines = Read-AllLinesWithEncoding -path $path -enc $encInfo.Encoding
+
+            Write-Host "File outputs: ${path} (detected: $($encInfo.Kind), BOM: $($encInfo.HasBom))"
+            ($lines -join "`n") | Write-Output
+
