@@ -38,9 +38,9 @@ runs:
       - name: check inputs
         shell: pwsh
         run: |
-          if ([string]::IsNullOrWhiteSpace('${{ inputs.ini_path }}')) {
-            exit 1
-          }
+            if ([string]::IsNullOrWhiteSpace('${{ inputs.ini_path }}')) {
+              exit 1
+            }
 
       - name: Edit INI
         shell: pwsh
@@ -53,7 +53,6 @@ runs:
 
             # ---- helpers ----
             function Get-IniEncodingInfo([string]$path) {
-              # Return: @{ Kind = 'utf8'|'utf16le'|'utf16be'|'utf32le'|'utf32be'|'cp932'; Encoding = <Encoding>; HasBom = <bool> }
               if (-not (Test-Path -LiteralPath $path)) {
                 return @{
                   Kind     = 'utf8'
@@ -67,7 +66,6 @@ runs:
                 $buf = New-Object byte[] 4
                 $read = $fs.Read($buf, 0, 4)
 
-                # BOM detection (order matters)
                 if ($read -ge 4 -and $buf[0] -eq 0x00 -and $buf[1] -eq 0x00 -and $buf[2] -eq 0xFE -and $buf[3] -eq 0xFF) {
                   return @{ Kind='utf32be'; Encoding=[System.Text.UTF32Encoding]::new($true,  $true); HasBom=$true }
                 }
@@ -89,14 +87,10 @@ runs:
                 $fs.Position = 0
                 try {
                   $sr = [System.IO.StreamReader]::new($fs, $strictUtf8, $false, 4096, $true)
-                  try {
-                    while (-not $sr.EndOfStream) { [void]$sr.ReadLine() }
-                  } finally {
-                    $sr.Dispose()
-                  }
+                  try { while (-not $sr.EndOfStream) { [void]$sr.ReadLine() } }
+                  finally { $sr.Dispose() }
                   return @{ Kind='utf8'; Encoding=[System.Text.UTF8Encoding]::new($false); HasBom=$false }
                 } catch {
-                  # CP932 (Shift-JIS) fallback (Windows Japanese typical)
                   return @{ Kind='cp932'; Encoding=[System.Text.Encoding]::GetEncoding(932); HasBom=$false }
                 }
               } finally {
@@ -106,7 +100,9 @@ runs:
 
             function Read-AllLinesWithEncoding([string]$path, [System.Text.Encoding]$enc) {
               $lines = [System.Collections.Generic.List[string]]::new()
-              if (-not (Test-Path -LiteralPath $path)) { return $lines }
+              if (-not (Test-Path -LiteralPath $path)) {
+                return ,$lines  # ★ NoEnumerate
+              }
 
               $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
               try {
@@ -119,7 +115,8 @@ runs:
               } finally {
                 $fs.Dispose()
               }
-              return $lines
+
+              return ,$lines     # ★ ここが重要：Listを列挙させず “1個のオブジェクト” として返す
             }
 
             function Write-AllLinesWithEncoding([string]$path, [System.Collections.Generic.List[string]]$lines, [System.Text.Encoding]$enc) {
@@ -159,8 +156,8 @@ runs:
               Write-Host "File exists: $iniPath (detected: $($encInfo.Kind), BOM: $($encInfo.HasBom))"
             }
 
-            # ---- load with detected encoding
-            $lines = Read-AllLinesWithEncoding -path $iniPath -enc $encInfo.Encoding
+            # ---- load (force type)
+            [System.Collections.Generic.List[string]]$lines = Read-AllLinesWithEncoding -path $iniPath -enc $encInfo.Encoding
 
             # sections = [{Name,Start,End})
             $sections = New-Object System.Collections.Generic.List[psobject]
@@ -207,7 +204,7 @@ runs:
 
             # ---- save with SAME encoding (and same BOM behavior via Encoding instance)
             Write-AllLinesWithEncoding -path $iniPath -lines $lines -enc $encInfo.Encoding
-            
+
       - name: Output ini
         if: ${{ inputs.out_input_file == 'true' }}
         shell: pwsh
@@ -215,12 +212,21 @@ runs:
             $path = "${{ inputs.ini_path }}"
             if (-not (Test-Path -LiteralPath $path)) {
               Write-Error "File not found: ${path}"
+              exit 1
             }
 
-            # reuse same encoding detection helper (Get-IniEncodingInfo) and reader
-            $encInfo = Get-IniEncodingInfo -path $path
-            $lines = Read-AllLinesWithEncoding -path $path -enc $encInfo.Encoding
+            Write-Host "File outputs (UTF-8): ${path}"
 
-            Write-Host "File outputs: ${path} (detected: $($encInfo.Kind), BOM: $($encInfo.HasBom))"
-            ($lines -join "`n") | Write-Output
+            # バイトで読み → BOM があれば除去 → UTF-8 で出力
+            $bytes = [System.IO.File]::ReadAllBytes($path)
 
+            # UTF-8 BOM
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+              $bytes = $bytes[3..($bytes.Length-1)]
+            }
+
+            $utf8 = [System.Text.UTF8Encoding]::new($false)
+            $text = $utf8.GetString($bytes)
+
+            # Write-Output は既定で UTF-8 なので、そのまま出す
+            $text | Write-Output
